@@ -275,10 +275,12 @@ do_configure() {
             echo "config(\"yocto_native_fontconfig\") {"
             echo "  include_dirs = [ \"${STAGING_INCDIR_NATIVE}\" ]"
             echo "  lib_dirs = [ \"${STAGING_LIBDIR_NATIVE}\" ]"
-            echo "  ldflags = ["
-            echo "    \"-Wl,-rpath-link,${STAGING_LIBDIR_NATIVE}\","
-            echo "    \"-Wl,-rpath,${STAGING_LIBDIR_NATIVE}\","
-            echo "  ]"
+            # -rpath-link only: the linker has to open libfontconfig.so and
+            # resolve its transitive deps, but -Wl,--as-needed and
+            # --gc-sections drop the library from DT_NEEDED (impellerc
+            # references no Fc* symbols), so a runtime -rpath would bake a
+            # workdir path in for a library that is never loaded.
+            echo "  ldflags = [ \"-Wl,-rpath-link,${STAGING_LIBDIR_NATIVE}\" ]"
             echo "}"
         } >> "$_fc_gn"
 
