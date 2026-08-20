@@ -118,7 +118,7 @@ PACKAGECONFIG[debug] = "--runtime-mode debug"
 PACKAGECONFIG[desktop-embeddings] = ",--disable-desktop-embeddings, glib-2.0 gtk+3"
 PACKAGECONFIG[embedder-examples] = "--build-embedder-examples,--no-build-embedder-examples"
 PACKAGECONFIG[embedder-for-target] = "--embedder-for-target"
-PACKAGECONFIG[fontconfig] = "--enable-fontconfig,,fontconfig"
+PACKAGECONFIG[fontconfig] = "--enable-fontconfig,,fontconfig fontconfig-native"
 PACKAGECONFIG[full-dart-debug] = "--full-dart-debug"
 PACKAGECONFIG[full-dart-sdk] = "--full-dart-sdk,--no-full-dart-sdk"
 PACKAGECONFIG[fstack-protector] = "--fstack-protector"
@@ -233,6 +233,60 @@ do_configure() {
     # bundled debian_bullseye sysroot instead of using --target-sysroot.
     # The sed is kept for older engines where the .gni default was true.
     sed -i "s|use_default_linux_sysroot = true|use_default_linux_sysroot = false|g" build/config/sysroot.gni
+
+    #
+    # host-toolchain fontconfig
+    #
+    # //third_party:fontconfig is only libs = [ "fontconfig" ] -- it adds no
+    # include or library path, so it relies on the header being in the
+    # compiler's default search path. Target compiles get it from
+    # --target-sysroot, but the host toolchain (clang_x64/) has no sysroot and
+    # falls through to the build host's /usr/include. That is only present if
+    # the host distro happens to ship fontconfig headers, which is not
+    # something the build may assume, and it is why this only ever failed in a
+    # clean container.
+    #
+    # The host consumer is impellerc, the Impeller shader compiler: it links
+    # host skia, whose fontmgr_fontconfig port has
+    # public_deps = [ "//third_party:fontconfig" ]. impellerc ships in
+    # engine_sdk.zip under sdk/clang_${CLANG_BUILD_ARCH}/ and runs on the build
+    # host, so it needs fontconfig-native, not the target's fontconfig.
+    #
+    # Note the label: there is no //third_party/BUILD.gn at the engine root, so
+    # .gn's secondary_source sends it to flutter/build/secondary/. skia has its
+    # own config("system_fontconfig"), but nothing in this graph reaches it.
+    # The source_set has no sources of its own, so the paths have to ride out
+    # on a public_config to land on dependents' compile lines. Scoped to
+    # host_toolchain so native headers can never preempt the target sysroot.
+    if ${@bb.utils.contains('PACKAGECONFIG', 'fontconfig', 'true', 'false', d)}; then
+
+        _fc_gn="flutter/build/secondary/third_party/BUILD.gn"
+
+        # idempotent: do_configure can be forced without a fresh unpack, and a
+        # second append would be a duplicate gn definition.
+        if ! grep -q "yocto_native_fontconfig" "$_fc_gn"; then
+
+        sed -i -e "s|^\([[:space:]]*\)libs = \[ \"fontconfig\" \]|\1libs = [ \"fontconfig\" ]\n\1if (current_toolchain == host_toolchain) {\n\1  public_configs = [ \":yocto_native_fontconfig\" ]\n\1}|" "$_fc_gn"
+
+        # written with echo rather than a heredoc: bitbake ends a shell
+        # function at a column-0 "}", which a gn block would otherwise contain.
+        {
+            echo ""
+            echo "config(\"yocto_native_fontconfig\") {"
+            echo "  include_dirs = [ \"${STAGING_INCDIR_NATIVE}\" ]"
+            echo "  lib_dirs = [ \"${STAGING_LIBDIR_NATIVE}\" ]"
+            echo "  ldflags = ["
+            echo "    \"-Wl,-rpath-link,${STAGING_LIBDIR_NATIVE}\","
+            echo "    \"-Wl,-rpath,${STAGING_LIBDIR_NATIVE}\","
+            echo "  ]"
+            echo "}"
+        } >> "$_fc_gn"
+
+        fi
+
+        grep -q "public_configs = \[ \":yocto_native_fontconfig\" \]" "$_fc_gn" || \
+            bbfatal "failed to patch source_set(\"fontconfig\") in $_fc_gn"
+    fi
 
     #
     # vulkan_headers override: enables DRM case
